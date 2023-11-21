@@ -342,6 +342,238 @@ export class ChatGPTAPI {
     }
   }
 
+  async sendMessageImage(
+    text: string,
+    images: [],
+    opts: types.SendMessageOptions = {}
+  ): Promise<types.ChatMessage> {
+    const {
+      parentMessageId,
+      messageId = uuidv4(),
+      timeoutMs,
+      onProgress,
+      stream = onProgress ? true : false,
+      completionParams,
+      conversationId
+    } = opts
+
+    let { abortSignal } = opts
+
+    let abortController: AbortController = null
+    if (timeoutMs && !abortSignal) {
+      abortController = new AbortController()
+      abortSignal = abortController.signal
+    }
+
+    const message: types.ChatMessage = {
+      role: 'user',
+      id: messageId,
+      conversationId,
+      parentMessageId,
+      text
+    }
+
+    const latestQuestion = message
+
+    const { messages, maxTokens, numTokens } = await this._buildMessages(
+      text,
+      opts
+    )
+
+    if (images && images.length > 0) {
+      for (let i = messages.length - 1; i >= 0; i--) {
+        let lastMessage = messages[i]
+        if (lastMessage.role == 'user') {
+          var content = lastMessage.content
+          var temp: [any] = [
+            {
+              type: 'text',
+              text: content
+            }
+          ]
+          for (const index in images) {
+            temp.push({
+              type: 'image_url',
+              image_url: images[index]
+            })
+          }
+          messages[i].content = temp
+          break
+        }
+      }
+    }
+
+    const result: types.ChatMessage = {
+      role: 'assistant',
+      id: uuidv4(),
+      conversationId,
+      parentMessageId: messageId,
+      text: ''
+    }
+
+    const responseP = new Promise<types.ChatMessage>(
+      async (resolve, reject) => {
+        const url = `${this._apiBaseUrl}/chat/completions`
+        const headers = {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${this._apiKey}`
+        }
+        const body = {
+          max_tokens: maxTokens,
+          ...this._completionParams,
+          ...completionParams,
+          messages,
+          stream
+        }
+
+        // Support multiple organizations
+        // See https://platform.openai.com/docs/api-reference/authentication
+        if (this._apiOrg) {
+          headers['OpenAI-Organization'] = this._apiOrg
+        }
+
+        if (this._debug) {
+          console.log(`sendMessage (${numTokens} tokens)`, body)
+        }
+
+        if (stream) {
+          fetchSSE(
+            url,
+            {
+              method: 'POST',
+              headers,
+              body: JSON.stringify(body),
+              signal: abortSignal,
+              onMessage: (data: string) => {
+                if (data === '[DONE]') {
+                  result.text = result.text.trim()
+                  return resolve(result)
+                }
+
+                try {
+                  const response: types.openai.CreateChatCompletionDeltaResponse =
+                    JSON.parse(data)
+
+                  if (response.id) {
+                    result.id = response.id
+                  }
+
+                  if (response.choices?.length) {
+                    const delta = response.choices[0].delta
+                    result.delta = delta.content
+                    if (delta?.content) result.text += delta.content
+
+                    if (delta.role) {
+                      result.role = delta.role
+                    }
+
+                    result.detail = response
+                    onProgress?.(result)
+                  }
+                } catch (err) {
+                  console.warn('OpenAI stream SEE event unexpected error', err)
+                  return reject(err)
+                }
+              }
+            },
+            this._fetch
+          ).catch(reject)
+        } else {
+          try {
+            const res = await this._fetch(url, {
+              method: 'POST',
+              headers,
+              body: JSON.stringify(body),
+              signal: abortSignal
+            })
+
+            if (!res.ok) {
+              const reason = await res.text()
+              const msg = `OpenAI error ${
+                res.status || res.statusText
+              }: ${reason}`
+              const error = new types.ChatGPTError(msg, { cause: res })
+              error.statusCode = res.status
+              error.statusText = res.statusText
+              return reject(error)
+            }
+
+            const response: types.openai.CreateChatCompletionResponse =
+              await res.json()
+            if (this._debug) {
+              console.log(response)
+            }
+
+            if (response?.id) {
+              result.id = response.id
+            }
+
+            if (response?.choices?.length) {
+              const message = response.choices[0].message
+              result.text = message.content
+              if (message.role) {
+                result.role = message.role
+              }
+            } else {
+              const res = response as any
+              return reject(
+                new Error(
+                  `OpenAI error: ${
+                    res?.detail?.message || res?.detail || 'unknown'
+                  }`
+                )
+              )
+            }
+
+            result.detail = response
+
+            return resolve(result)
+          } catch (err) {
+            return reject(err)
+          }
+        }
+      }
+    ).then(async (message) => {
+      if (message.detail && !message.detail.usage) {
+        try {
+          const promptTokens = numTokens
+          const completionTokens = await this._getTokenCount(message.text)
+          message.detail.usage = {
+            prompt_tokens: promptTokens,
+            completion_tokens: completionTokens,
+            total_tokens: promptTokens + completionTokens,
+            estimated: true
+          }
+        } catch (err) {
+          // TODO: this should really never happen, but if it does,
+          // we should handle notify the user gracefully
+        }
+      }
+
+      return Promise.all([
+        this._upsertMessage(latestQuestion),
+        this._upsertMessage(message)
+      ]).then(() => message)
+    })
+
+    if (timeoutMs) {
+      if (abortController) {
+        // This will be called when a timeout occurs in order for us to forcibly
+        // ensure that the underlying HTTP request is aborted.
+        ;(responseP as any).cancel = () => {
+          abortController.abort()
+        }
+      }
+
+      return pTimeout(responseP, {
+        milliseconds: timeoutMs,
+        message: 'OpenAI timed out waiting for response'
+      })
+    } else {
+      return responseP
+    }
+  }
+
   get apiKey(): string {
     return this._apiKey
   }

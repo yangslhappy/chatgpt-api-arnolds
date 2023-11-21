@@ -1,7 +1,7 @@
 {
-  "name": "chatgpt",
-  "version": "5.2.5",
-  "description": "Node.js client for the official ChatGPT API.",
+  "name": "chatgpt-api-arnolds",
+  "version": "5.2.7",
+  "description": "Node.js client for the official ChatGPT API. 原作者 Travis Fischer. Thanks for Travis Fischer.",
   "author": "Travis Fischer <travis@transitivebullsh.it>",
   "repository": "transitive-bullshit/chatgpt-api",
   "license": "MIT",
