@@ -373,7 +373,7 @@ export class ChatGPTAPI {
       text
     }
 
-    const latestQuestion = message
+    let latestQuestion = message
 
     const { messages, maxTokens, numTokens } = await this._buildMessages(
       text,
@@ -398,6 +398,8 @@ export class ChatGPTAPI {
             })
           }
           messages[i].content = temp
+          latestQuestion.text = temp
+          message.text = temp
           break
         }
       }
