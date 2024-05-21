@@ -394,7 +394,9 @@ export class ChatGPTAPI {
           for (const index in images) {
             temp.push({
               type: 'image_url',
-              image_url: images[index]
+              image_url: {
+                url: images[index]
+              }
             })
           }
           messages[i].content = temp
